@@ -109,7 +109,13 @@ def extract_project_names(df):
                 # Pattern: "In PROJECT_NAME [URL]"
                 try:
                     project_name = blurb.split('In ')[1].split(' [')[0]
-                    project_mapping[idx] = project_name
+                    # Clean up the project name
+                    project_name = project_name.strip()
+                    # Only use if it's a reasonable length and doesn't contain newlines
+                    if project_name and len(project_name) < 100 and '\n' not in project_name:
+                        project_mapping[idx] = project_name
+                    else:
+                        project_mapping[idx] = "Unknown_Project"
                 except:
                     project_mapping[idx] = "Unknown_Project"
             else:
@@ -119,7 +125,7 @@ def extract_project_names(df):
 
 def analyze_all_projects(csv_file_path, time_multiplier=1.0, min_activity_hours=0.25, 
                         max_session_gap_hours=2.0, session_end_buffer=0.25, min_activities=3, 
-                        timezone='UTC'):
+                        timezone='US/Central'):
     """
     Analyze time spent on all detected projects.
     
@@ -136,13 +142,25 @@ def analyze_all_projects(csv_file_path, time_multiplier=1.0, min_activity_hours=
         tuple: (daily_hours_dict, project_sessions_dict, project_counts)
     """
     
-    # Read the CSV file
-    df = pd.read_csv(csv_file_path)
+    # Read the CSV file with better error handling
+    try:
+        # Try reading with different settings to handle problematic lines
+        df = pd.read_csv(csv_file_path, on_bad_lines='warn', engine='python')
+    except Exception as e:
+        print(f"Error reading CSV with python engine: {e}")
+        try:
+            # Fallback: try with c engine and skip bad lines
+            df = pd.read_csv(csv_file_path, on_bad_lines='skip')
+            print("Warning: Some malformed lines were skipped")
+        except Exception as e2:
+            print(f"Error reading CSV: {e2}")
+            return {}, {}, {}
     
     # Debug: Print first few rows to understand the data structure
     print("First few rows of data:")
     print(df.head())
     print(f"Columns: {list(df.columns)}")
+    print(f"Total rows loaded: {len(df)}")
     
     # Convert timestamp to datetime with better error handling
     df['timestamp'] = pd.to_numeric(df['timestamp'], errors='coerce')
@@ -493,6 +511,38 @@ def analyze_work_patterns(daily_hours):
     
     print(f"Longest work streak: {max_streak} consecutive days")
 
+def sanitize_filename(filename):
+    """
+    Sanitize a string to be used as a filename.
+    
+    Args:
+        filename (str): Original filename
+        
+    Returns:
+        str: Sanitized filename safe for all operating systems
+    """
+    # Remove or replace invalid characters
+    invalid_chars = '<>:"/\\|?*\n\r\t'
+    for char in invalid_chars:
+        filename = filename.replace(char, '_')
+    
+    # Replace multiple underscores with single underscore
+    while '__' in filename:
+        filename = filename.replace('__', '_')
+    
+    # Remove leading/trailing underscores and spaces
+    filename = filename.strip('_ ')
+    
+    # Limit length to 200 characters (leaving room for prefix/suffix)
+    if len(filename) > 200:
+        filename = filename[:200]
+    
+    # If filename is empty or only special chars, use a default
+    if not filename or filename == '_':
+        filename = "Unknown_Project"
+    
+    return filename
+
 def export_to_csv(project_sessions, output_file="project_sessions.csv"):
     """Export the project sessions to a CSV file with Start Date, Start Time, End Date, End Time, Hours columns."""
     if not project_sessions:
@@ -819,7 +869,7 @@ if __name__ == "__main__":
         # Export each project's session data
         for project_name, sessions in project_sessions.items():
             if sessions:
-                safe_name = project_name.replace('/', '_').replace(' ', '_')  # Make filename safe
+                safe_name = sanitize_filename(project_name)
                 filename = f"sessions_{safe_name}_{estimation_level}.csv"
                 export_to_csv(sessions, filename)
         

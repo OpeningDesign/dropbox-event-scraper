@@ -6,3 +6,4 @@ options.json
 *.lnk
 *.url
 __pycache__
+*.csv#
