@@ -9,12 +9,15 @@ const options = require("./options.json")
 
 const PAGE_SIZE = 250
 const CSV_OUTPUT_PATH = './output.csv'
-const START_DATE = 'July 08, 2025 20:00:00 GMT+00:00'
+const START_DATE = 'September 01, 2025 20:00:00 GMT+00:00'
 const START_EPOCH_TIME = Math.round(new Date(START_DATE).getTime() / 1000)
 
-const END_DATE = 'July 15, 2025 21:59:59 GMT+00:00'
+const END_DATE = 'December 08, 2025 21:59:59 GMT+00:00'
 const END_EPOCH_TIME = Math.round(new Date(END_DATE).getTime() / 1000)
 let epochTime = END_EPOCH_TIME
+
+// Track whether headers have been written
+let headersWritten = false;
 
 let replacer = () => {
     return "timestamp=" + epochTime.toString(10);
@@ -44,24 +47,6 @@ let getEventText = async (url) => {
 
         let data = await fetch(url, optionsGetRequest)
         let html = await data.text()
-        // let regex = /InitReact(.*?)event_details(.*?)"entries":\s(\[.*?\]),/g
-        // let match = regex.exec(text)
-        // if (match != null) {
-        //     let jsonResponse = JSON.parse(match[3])
-
-        //     return new Promise(resolve => {
-        //         for (const response of jsonResponse) {
-        //             if(response.fileUrl != null) {
-        //                 console.log(response)
-        //                 resolve(response.fileUrl)
-        //             }
-        //         }
-        //         resolve("")
-        //     })
-        // } else {
-        //     return new Promise(resolve => resolve(""))
-        // }
-
 
         const regex = /edisonModule\.Edison\.registerStreamedPrefetch\(\s*"([^"]+)"\s*,\s*"([^"]+)"/g;
         let match;
@@ -99,33 +84,18 @@ let parseAndSave = async(data) => {
                 }
             }
 
-            /*
-            Async fetching of event details
-            const promises = data.events.map(async (eventDetail) => {
-                let regex = /href='([^https:].*?)'/
-
-                if (regex.exec(eventDetail['event_blurb']) != null) {
-                    let dataLink = await getEventText("https://www.dropbox.com" + regex.exec(eventDetail['event_blurb'])[1])
-                    console.log("Link: " + dataLink)
-
-                    eventDetail['dataLink'] = dataLink
-
-                    return new Promise(resolve => {
-                        resolve(dataLink)
-                    })
-                }
-            })
-            await Promise.all(promises)
-            */
-
-
             const fields = ['name', 'timestamp', 'ago', 'event_blurb', {
                 label: 'blurb',
                 value: (item) => {
                     return htmlToText(item['blurb'])
                 }
             }, 'dataLink'];
-            const opts = {fields};
+            
+            // Control header inclusion based on whether this is the first write
+            const opts = {
+                fields,
+                header: !headersWritten  // Only include header if not yet written
+            };
 
             const parser = new json2csv.Parser(opts);
             const csvData = parser.parse(data.events);
@@ -138,7 +108,16 @@ let parseAndSave = async(data) => {
 
             epochTime = data.events[totalEvents - 1]['timestamp']
 
+            // Append to file
             fs.appendFileSync(CSV_OUTPUT_PATH, csvData);
+            
+            // Add newline after data if headers were written (to separate batches)
+            if (!headersWritten) {
+                fs.appendFileSync(CSV_OUTPUT_PATH, '\n');
+                headersWritten = true;
+            } else {
+                fs.appendFileSync(CSV_OUTPUT_PATH, '\n');
+            }
 
             return 0;
         } catch (err) {
@@ -152,11 +131,15 @@ let parseAndSave = async(data) => {
 }
 
 let main = async() => {
+    // Reset headers flag when starting fresh
+    headersWritten = false;
+    
     fs.exists(CSV_OUTPUT_PATH, function(exists) {
         if(exists) {
             fs.unlinkSync(CSV_OUTPUT_PATH)
         }
     });
+    
     while (START_EPOCH_TIME < epochTime) {
         try {
             let status = await parseAndSave(getData())
