@@ -249,7 +249,7 @@ After scraping your data, use the Project Hours Analyzer to calculate time spent
 python project_hours_analyzer.py
 ```
 
-See the [Project Hours Analyzer README](./project_hours_analyzer/README.md) for details.
+See the [Project Hours Analyzer README](./project_hours_analyzer/readme.md) for details.
 
 ## Contributing
 
