@@ -7,3 +7,4 @@ options.json
 *.url
 __pycache__
 *.csv#
+*.ods
