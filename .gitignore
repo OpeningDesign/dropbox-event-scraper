@@ -8,3 +8,11 @@ options.json
 __pycache__
 *.csv#
 *.ods
+*.ods#
+
+
+# temp files from AI coding tools
+*.claude
+*.py.tmp*
+*.json.tmp*
+*.tmp.*
