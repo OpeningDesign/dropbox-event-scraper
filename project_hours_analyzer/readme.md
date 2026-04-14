@@ -42,17 +42,40 @@ Ryan Schultz,1753793081,7/29/2025,7:44 AM,You edited House.ifc and 8 more files,
 pip install pandas numpy
 ```
 
-## Command Line Usage
+## Running the Analyzer
 
-### Basic usage (analyzes all projects automatically):
+### Using the batch script (recommended for Windows):
+
+Double-click `run_analyzer.bat` inside the `project_hours_analyzer` folder, or run it from a terminal:
+
+```bat
+project_hours_analyzer\run_analyzer.bat
+```
+
+You will be prompted to choose an estimation preset:
+
+```
+Select an estimation preset:
+  1. Conservative  (multiplier: 0.75 - tighter session gaps)
+  2. Moderate      (multiplier: 1.00 - balanced)
+  3. Generous      (multiplier: 1.50 - wider session gaps)
+
+Enter 1, 2, or 3 [default: 1]:
+```
+
+### Command line (with preset argument):
 
 ```bash
-python project_hours_analyzer.py
+python project_hours_analyzer.py conservative
+python project_hours_analyzer.py moderate
+python project_hours_analyzer.py generous
 ```
+
+If no argument is given, defaults to `conservative`.
 
 This will:
 - Detect all projects from your activity data
-- Use moderate time estimation settings
+- Apply the chosen estimation preset
 - Convert timestamps from UTC to US/Central timezone
 - Export CSV files for each project found
 
@@ -224,13 +247,15 @@ start_date,start_time,end_date,end_time,hours
 
 Output files are named using the pattern:
 ```
-sessions_{PROJECT_NAME}_{ESTIMATION_LEVEL}.csv
+sessions_{PROJECT_NAME}_{ESTIMATION_LEVEL}_{FIRST_DATE}_to_{LAST_DATE}_{TOTAL_HOURS}hrs.csv
 ```
 
+- **FIRST_DATE** / **LAST_DATE**: The earliest and latest dates found in the activity log (YYYY-MM-DD)
+- **TOTAL_HOURS**: Sum of all session hours for that project
+
 Examples:
-- `sessions_Restaurant_Brookfield_3_moderate.csv`
-- `sessions_Bonsai_Tutorials_moderate.csv`
-- `sessions_IfcOpenShell_conservative.csv`
+- `sessions_Restaurant_Brookfield_3_moderate_2024-01-15_to_2025-07-29_38.5hrs.csv`
+- `sessions_Bonsai_Tutorials_conservative_2024-03-01_to_2025-07-29_12.25hrs.csv`
 
 ## Expected File Structure
 

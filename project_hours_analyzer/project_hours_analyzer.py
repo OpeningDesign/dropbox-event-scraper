@@ -333,7 +333,10 @@ def analyze_all_projects(csv_file_path, time_multiplier=1.0, min_activity_hours=
         
         project_sessions[project_name] = sessions
     
-    return project_hours, project_sessions, project_counts
+    first_date = df['date'].min()
+    last_date = df['date'].max()
+
+    return project_hours, project_sessions, project_counts, first_date, last_date
 
 def merge_overlapping_sessions(sessions):
     """
@@ -566,7 +569,7 @@ def export_to_csv(project_sessions, output_file="project_sessions.csv"):
     )
     df_export = df_export.sort_values('start_datetime')
     df_export = df_export.drop('start_datetime', axis=1)  # Remove helper column
-    
+
     df_export.to_csv(output_file, index=False)
     print(f"Session data exported to: {output_file}")
 
@@ -642,25 +645,25 @@ def detect_and_analyze_projects(csv_file_path, **kwargs):
     Main function to detect projects and analyze time spent on each.
     """
     try:
-        project_hours, project_sessions, project_counts = analyze_all_projects(csv_file_path, **kwargs)
-        
+        project_hours, project_sessions, project_counts, first_date, last_date = analyze_all_projects(csv_file_path, **kwargs)
+
         print("=== Project Detection Results ===")
         print(f"Total activities processed: {sum(project_counts.values())}")
         print(f"Projects detected: {len(project_counts)}")
-        
+
         # Show all detected projects (including small ones)
         print(f"\nAll detected projects (activity count):")
         for project, count in sorted(project_counts.items(), key=lambda x: x[1], reverse=True):
             print(f"  {project}: {count} activities")
-        
+
         # Show detailed analysis for significant projects
         print_project_summary(project_hours, project_counts)
-        
-        return project_hours, project_sessions, project_counts
-        
+
+        return project_hours, project_sessions, project_counts, first_date, last_date
+
     except Exception as e:
         print(f"Error analyzing projects: {e}")
-        return {}, {}, {}
+        return {}, {}, {}, None, None
 
 def analyze_specific_project(csv_file_path, project_name, **kwargs):
     """Analyze a specific project by name."""
@@ -855,8 +858,12 @@ if __name__ == "__main__":
         }
     }
     
-    # Choose your estimation level
-    estimation_level = "moderate"  # Change to: conservative, moderate, or generous
+    # Choose your estimation level (can be overridden via command-line argument)
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ESTIMATION_PRESETS:
+        estimation_level = sys.argv[1]
+    else:
+        estimation_level = "conservative"  # Change to: conservative, moderate, or generous
     settings = ESTIMATION_PRESETS[estimation_level]
     
     try:
@@ -864,13 +871,19 @@ if __name__ == "__main__":
         print(f"Settings: {settings}")
         
         # Auto-detect and analyze all projects
-        project_hours, project_sessions, project_counts = detect_and_analyze_projects(csv_file, **settings)
-        
+        project_hours, project_sessions, project_counts, first_date, last_date = detect_and_analyze_projects(csv_file, **settings)
+
+        # Build date range suffix for filenames
+        date_suffix = ""
+        if first_date and last_date:
+            date_suffix = f"_{first_date.strftime('%Y-%m-%d')}_to_{last_date.strftime('%Y-%m-%d')}"
+
         # Export each project's session data
         for project_name, sessions in project_sessions.items():
             if sessions:
                 safe_name = sanitize_filename(project_name)
-                filename = f"sessions_{safe_name}_{estimation_level}.csv"
+                total_hours = round(sum(s['hours'] for s in sessions), 2)
+                filename = f"sessions_{safe_name}_{estimation_level}{date_suffix}_{total_hours}hrs.csv"
                 export_to_csv(sessions, filename)
         
         print(f"\nSession data exported for {len(project_sessions)} projects")
