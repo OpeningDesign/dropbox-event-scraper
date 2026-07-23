@@ -5,15 +5,28 @@ const sleep = require('util').promisify(setTimeout);
 const fs = require('fs');
 const { decode } = require('./decoder.js');
 
-const options = require("./options.json")
+let options
+try {
+    options = require("./options.json")
+} catch (err) {
+    console.error("Could not load options.json. In Docker, mount it with:")
+    console.error("  docker run -v \"${PWD}/options.json:/scraper/options.json:ro\" ...")
+    process.exit(1)
+}
 
-const PAGE_SIZE = 250
-const CSV_OUTPUT_PATH = './output.csv'
-const START_DATE = 'September 01, 2025 20:00:00 GMT+00:00'
+// Dropbox rejects anything above 100 with a 400 (the old 250 limit is gone)
+const PAGE_SIZE = 100
+const CSV_OUTPUT_PATH = process.env.CSV_OUTPUT_PATH || './output.csv'
+const START_DATE = process.env.START_DATE || 'April 2, 2026 00:00:00 GMT+00:00'
 const START_EPOCH_TIME = Math.round(new Date(START_DATE).getTime() / 1000)
 
-const END_DATE = 'December 08, 2025 21:59:59 GMT+00:00'
+const END_DATE = process.env.END_DATE || 'May 8, 2026 00:00:00 GMT+00:00'
 const END_EPOCH_TIME = Math.round(new Date(END_DATE).getTime() / 1000)
+
+if(isNaN(START_EPOCH_TIME) || isNaN(END_EPOCH_TIME)) {
+    console.error("Invalid START_DATE or END_DATE. Use e.g. 'May 5, 2026 00:00:00 GMT+00:00'")
+    process.exit(1)
+}
 let epochTime = END_EPOCH_TIME
 
 // Track whether headers have been written
@@ -32,7 +45,10 @@ let getData = async () => {
     console.log(date)
 
     let data = await fetch("https://www.dropbox.com/events/ajax", options);
-    if(data.status === 403) {
+
+    // Any non-2xx returns an HTML error page, so json() would throw something
+    // unrecognisable. Surface the status instead.
+    if(!data.ok) {
         throw new Error(data.status);
     }
     return data.json();
@@ -48,19 +64,33 @@ let getEventText = async (url) => {
         let data = await fetch(url, optionsGetRequest)
         let html = await data.text()
 
-        const regex = /edisonModule\.Edison\.registerStreamedPrefetch\(\s*"([^"]+)"\s*,\s*"([^"]+)"/g;
+        // Dropbox now emits window.addEdisonLoadCallback(Edison =>
+        // Edison.registerStreamedPrefetch("blob"[, "blob"])). The old
+        // edisonModule.Edison.* prefix is gone, and the payload moved to the
+        // first argument, so match both positions.
+        const regex = /registerStreamedPrefetch\(\s*"([^"]+)"(?:\s*,\s*"([^"]+)")?/g;
         let match;
         while ((match = regex.exec(html)) !== null) {
-            decodedData = decode(match[2])
+            for (const candidate of [match[1], match[2]]) {
+                if(!candidate) continue
 
-            if(decodedData != "") {
-                return new Promise(resolve => {
+                let decodedData = ""
+                try {
+                    decodedData = decode(candidate)
+                } catch (err) {
+                    continue  // not every prefetch blob is a decodable payload
+                }
+
+                // Only a /pri/get/ link carries the file path the analyzer needs.
+                // Returning the event_details URL instead would make it read the
+                // event id as a project name and skip its own blurb fallback.
+                if(decodedData.includes('/pri/get/')) {
                     console.log(decodedData)
-                    resolve(decodedData)
-                })
+                    return decodedData
+                }
             }
         }
-        return new Promise(resolve => resolve(""))
+        return ""
     } catch(err) {
         console.error(err.message)
         return new Promise(resolve => resolve(""))
@@ -108,54 +138,79 @@ let parseAndSave = async(data) => {
 
             epochTime = data.events[totalEvents - 1]['timestamp']
 
-            // Append to file
-            fs.appendFileSync(CSV_OUTPUT_PATH, csvData);
-            
-            // Add newline after data if headers were written (to separate batches)
+            // The first successful batch truncates any prior file; later batches
+            // append. Truncating here (rather than deleting up front in main)
+            // means a run that fails before its first batch - e.g. expired
+            // cookies - leaves the previous output.csv intact.
             if (!headersWritten) {
-                fs.appendFileSync(CSV_OUTPUT_PATH, '\n');
+                fs.writeFileSync(CSV_OUTPUT_PATH, csvData + '\n');
                 headersWritten = true;
             } else {
-                fs.appendFileSync(CSV_OUTPUT_PATH, '\n');
+                fs.appendFileSync(CSV_OUTPUT_PATH, csvData + '\n');
             }
 
             return 0;
         } catch (err) {
             console.error(err.message);
+            throw err;
         }
     }).catch(err => {
        if(err.message == 403) {
            throw Error("Options.json seems outdated, authentication error")
        }
+       if(err.message == 400) {
+           throw Error("Dropbox rejected the request (400) - PAGE_SIZE above 100 is the usual cause")
+       }
+       // Never swallow: returning undefined here leaves epochTime unchanged and
+       // the caller loops on the same batch forever
+       throw err
     });
 }
 
 let main = async() => {
-    // Reset headers flag when starting fresh
+    // Reset headers flag when starting fresh. The output file is NOT cleared
+    // here - the first successful batch truncates it (see parseAndSave), so a
+    // run that dies before writing anything preserves the previous results.
     headersWritten = false;
-    
-    fs.exists(CSV_OUTPUT_PATH, function(exists) {
-        if(exists) {
-            fs.unlinkSync(CSV_OUTPUT_PATH)
-        }
-    });
-    
+
+    console.log("Writing to", CSV_OUTPUT_PATH)
+
+
     while (START_EPOCH_TIME < epochTime) {
         try {
+            let previousEpochTime = epochTime
             let status = await parseAndSave(getData())
 
             if(status === -1) {
                 break
             }
 
+            // A batch that does not move the cursor means the next request is
+            // identical: stop rather than loop on it forever
+            if(epochTime === previousEpochTime) {
+                throw Error("Cursor did not advance past " + epochTime + ", stopping")
+            }
+
             await sleep(5000)
         } catch (err) {
-            console.log(err.message)
+            // epochTime holds the last successfully written batch boundary, so
+            // report it: a long run that dies partway can resume from here
+            let resumeFrom = new Date(0)
+            resumeFrom.setUTCSeconds(epochTime)
+
+            console.error("RUN FAILED at", new Date().toISOString(), "-", err.message)
+            console.error("Rows up to", resumeFrom.toISOString(), "are in", CSV_OUTPUT_PATH)
+            console.error("Resume with: -e END_DATE=\"" + resumeFrom.toUTCString() + "\"")
+            process.exitCode = 1
             break
         }
     }
 }
 
 main().then(() => {
-    console.log("Fetched all the data.")
+    if(process.exitCode === 1) {
+        console.error("Run ended early - see the RUN FAILED lines above.")
+        return
+    }
+    console.log("Fetched all the data.", new Date().toISOString())
 })
