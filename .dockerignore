@@ -1,0 +1,10 @@
+# Credentials are mounted at runtime, never baked into the image
+options.json
+
+node_modules
+.git
+*.csv
+*.lnk
+*.url
+__pycache__
+npm-debug.log

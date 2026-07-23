@@ -8,7 +8,33 @@ A tool to scrape and export your Dropbox activity history to CSV format for anal
 
 ## Quick Start
 
-### 1. Capture Authentication Credentials
+### Easiest: auto-capture credentials
+
+Dropbox sessions expire every few hours, and re-doing the DevTools capture by
+hand each time is tedious. `npm run refresh` automates it: it drives a local
+Chrome, captures a live `/events/ajax` request, and writes `options.json` for
+you (backing up the previous one to `options.json.bak`).
+
+```bash
+npm install          # once, to pull in puppeteer-core
+npm run refresh
+```
+
+The first run seeds a private automation profile from your real Chrome login, so
+**close all Chrome windows before the first run** (it copies your logged-in
+profile, which Chrome keeps locked while open). After that, Chrome can stay open
+on subsequent refreshes. It prints `Verify: POST /events/ajax -> 200 (OK)` when
+the captured credentials work.
+
+- Multiple Chrome profiles? It copies from `Default`; override with
+  `CHROME_PROFILE="Profile 1"`.
+- Session gone stale? Close Chrome and run `RESEED=1 npm run refresh`.
+- The automation profile lives in your home dir (`~/.dropbox-event-scraper`),
+  deliberately outside this folder so cookies never sync to Dropbox.
+
+If you'd rather capture credentials by hand, follow the manual steps below.
+
+### 1. Capture Authentication Credentials (manual)
 
 1. Navigate to [https://www.dropbox.com/events](https://www.dropbox.com/events) in Chrome
 2. Open Chrome DevTools (F12 or Right-click → Inspect)
@@ -117,19 +143,48 @@ const END_DATE = 'September 30, 2025 23:59:59 GMT+00:00'
    ```
 
 3. **Run the scraper**
+
+   `options.json` and the output CSV are mounted at runtime, so you do **not**
+   need to rebuild the image when your cookies expire.
+
+   - **Windows (PowerShell)**
+     ```powershell
+     mkdir out -Force
+     docker run --rm `
+       -v "${PWD}/options.json:/scraper/options.json:ro" `
+       -v "${PWD}/out:/scraper/out" scraper
+     ```
+
+   - **macOS/Linux**
+     ```bash
+     mkdir -p out
+     docker run --rm \
+       -v "$PWD/options.json:/scraper/options.json:ro" \
+       -v "$PWD/out:/scraper/out" scraper
+     ```
+
+   - **Windows (Git Bash / MINGW64)** — prefix with `MSYS_NO_PATHCONV=1`,
+     otherwise Git Bash rewrites the container-side `/scraper/...` path and the
+     mount lands in the wrong place (you'll see "Could not load options.json"):
+     ```bash
+     mkdir -p out
+     MSYS_NO_PATHCONV=1 docker run --rm \
+       -v "$PWD/options.json:/scraper/options.json:ro" \
+       -v "$PWD/out:/scraper/out" scraper
+     ```
+
+   The CSV appears at `./out/output.csv` as it is written — no `docker cp` step,
+   and partial results survive a run that dies partway through.
+
+4. **Override the date range without editing `index.js`** (optional)
    ```bash
-   docker run --name scraper_container scraper
+   docker run --rm -e START_DATE="May 5, 2026 00:00:00 GMT+00:00" \
+     -e END_DATE="July 20, 2026 00:00:00 GMT+00:00" \
+     -v "$PWD/options.json:/scraper/options.json:ro" \
+     -v "$PWD/out:/scraper/out" scraper
    ```
 
-4. **Export the output file**
-   ```bash
-   docker cp scraper_container:/scraper/output.csv ./output.csv
-   ```
-
-5. **Clean up (optional)**
-   ```bash
-   docker rm scraper_container
-   ```
+Rebuild the image only when you change `index.js` or dependencies.
 
 ### Option B: Using Node.js Directly
 
@@ -179,6 +234,22 @@ Ryan Schultz,1753793081,7/29/2025 7:44 AM,You edited <a>House.ifc</a>,You edited
 2. Recapture the fetch request from Chrome DevTools
 3. Update `options.json` with fresh authentication data
 
+Since `options.json` is mounted at runtime, just re-run — no rebuild needed.
+
+To confirm the session is dead rather than the config being malformed:
+
+```bash
+node -e "const o=require('./options.json'); fetch('https://www.dropbox.com/events',{headers:{cookie:o.headers.cookie},redirect:'manual'}).then(r=>console.log(r.status, r.headers.get('location')))"
+```
+
+A `302` to `/login?cont=%2Fevents` means the cookies have expired.
+
+Long date ranges make this more likely: the scraper issues one request per
+100-event batch **plus** one per event that links to a file, so a multi-month
+range can run for hours and outlive the session. If it dies partway, keep the
+partial `out/output.csv` and resume by setting `END_DATE` to the oldest
+timestamp you captured.
+
 ### No Events Returned
 
 **Problem**: CSV file is empty or very small
@@ -187,6 +258,27 @@ Ryan Schultz,1753793081,7/29/2025 7:44 AM,You edited <a>House.ifc</a>,You edited
 - Date range is outside your activity period
 - The `timestamp` in the body parameter needs to be updated
 - Check that your START_DATE is before END_DATE
+
+### Same Date Repeats Forever, No Rows Written
+
+**Problem**: the log prints the same timestamp over and over, never a
+`Batch size:` line, and `output.csv` is never created. Looks like a slow scrape;
+it is actually a request failing on every attempt.
+
+**Cause**: a request parameter Dropbox rejects — most often `PAGE_SIZE` above
+100. The response is an HTML error page, not JSON.
+
+**Check it directly**:
+
+```bash
+node -e "const o=require('./options.json'); o.body=o.body.replace(/page_size=[0-9]*/,'page_size=100'); fetch('https://www.dropbox.com/events/ajax',o).then(r=>console.log(r.status))"
+```
+
+`200` is healthy; `400` means a bad parameter, `403` means expired cookies.
+
+The scraper now fails loudly on this instead of looping — if you see the old
+silent behaviour, you are running a stale image. Rebuild with `docker build -t
+scraper .`
 
 ### Rate Limiting
 
@@ -199,10 +291,12 @@ The scraper includes a 5-second delay between requests to avoid rate limiting. F
 In `index.js`, you can modify:
 
 ```javascript
-const PAGE_SIZE = 250  // Number of events per request (max: 250)
+const PAGE_SIZE = 100  // Number of events per request (max: 100)
 ```
 
-Larger values = fewer requests but higher risk of timeouts.
+**100 is a hard limit.** Dropbox rejects `page_size=101` and above with an HTTP
+400 — verified by bisection. Earlier versions of this README documented a max of
+250; that no longer works and produces a 400 on *every* request.
 
 ### Adjusting Request Delay
 
@@ -221,8 +315,9 @@ dropbox-event-scraper/
 ├── index.js           # Main scraper script
 ├── decoder.js         # Decodes Dropbox response data
 ├── options.json       # Authentication credentials (DO NOT COMMIT)
-├── output.csv         # Generated output file
+├── out/output.csv     # Generated output file (Docker mount target)
 ├── Dockerfile         # Docker configuration
+├── .dockerignore      # Keeps credentials out of the built image
 ├── package.json       # Node.js dependencies
 └── README.md          # This file
 ```
@@ -237,7 +332,7 @@ dropbox-event-scraper/
 ## Known Limitations
 
 - Scraper only works with personal Dropbox accounts (not Business accounts with SSO)
-- Maximum of 250 events per request
+- Maximum of 100 events per request (Dropbox returns HTTP 400 above this)
 - Some events may not include `dataLink` if files were deleted
 - Timestamps are in UTC (convert to local time in post-processing)
 
