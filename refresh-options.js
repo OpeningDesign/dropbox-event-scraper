@@ -237,12 +237,16 @@ async function verify(options) {
             }
         }
 
+        let timeoutId;
         const result = await Promise.race([
             captured,
-            new Promise((_, rej) => setTimeout(
-                () => rej(new Error('Timed out waiting for ' + AJAX_MATCH + '.')),
-                CAPTURE_TIMEOUT_MS)),
+            new Promise((_, rej) => {
+                timeoutId = setTimeout(
+                    () => rej(new Error('Timed out waiting for ' + AJAX_MATCH + '.')),
+                    CAPTURE_TIMEOUT_MS);
+            }),
         ]);
+        clearTimeout(timeoutId); // otherwise this timer keeps the process alive
 
         const options = {
             headers: cleanHeaders(result.headers),
@@ -266,9 +270,24 @@ async function verify(options) {
             console.log('Warning: expected 200. The scraper may still reject these credentials.');
         }
     } finally {
-        await browser.close();
+        // browser.close() can hang if Chrome leaves a child process or the CDP
+        // pipe open, so cap it and hard-kill as a fallback.
+        try {
+            await Promise.race([
+                browser.close(),
+                new Promise((res) => setTimeout(res, 5000)),
+            ]);
+        } catch (_) { /* ignore */ }
+        const proc = browser.process && browser.process();
+        if (proc && !proc.killed) {
+            try { proc.kill('SIGKILL'); } catch (_) { /* ignore */ }
+        }
     }
-})().catch((err) => {
+})().then(() => {
+    // Explicit exit: puppeteer and undici's keep-alive sockets can leave the
+    // event loop non-empty even after everything above has finished.
+    process.exit(0);
+}).catch((err) => {
     console.error('Refresh failed:', err.message);
     process.exit(1);
 });
