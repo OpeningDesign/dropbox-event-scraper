@@ -176,13 +176,25 @@ const END_DATE = 'September 30, 2025 23:59:59 GMT+00:00'
    The CSV appears at `./out/output.csv` as it is written — no `docker cp` step,
    and partial results survive a run that dies partway through.
 
-4. **Override the date range without editing `index.js`** (optional)
+4. **Override the date range and output filename without editing `index.js`** (optional)
+
+   Pass `START_DATE`/`END_DATE` for the range and `CSV_OUTPUT_PATH` to name the
+   output file. Writing to a distinct filename (rather than the default
+   `output.csv`) keeps each run's results separate and lets you leave an earlier
+   CSV open in a spreadsheet without the next run trying to overwrite it.
+
    ```bash
-   docker run --rm -e START_DATE="May 5, 2026 00:00:00 GMT+00:00" \
-     -e END_DATE="July 20, 2026 00:00:00 GMT+00:00" \
+   MSYS_NO_PATHCONV=1 docker run --rm \
+     -e START_DATE="May 6, 2026 00:00:00 GMT+00:00" \
+     -e END_DATE="May 10, 2026 00:00:00 GMT+00:00" \
+     -e CSV_OUTPUT_PATH=/scraper/out/daysinmay.csv \
      -v "$PWD/options.json:/scraper/options.json:ro" \
      -v "$PWD/out:/scraper/out" scraper
    ```
+
+   This writes to `./out/daysinmay.csv`. Drop the `MSYS_NO_PATHCONV=1` prefix on
+   macOS/Linux. `CSV_OUTPUT_PATH` must point inside `/scraper/out` so the file
+   lands in your mounted `out/` directory.
 
 Rebuild the image only when you change `index.js` or dependencies.
 
